@@ -45,7 +45,7 @@ namespace mcpwebapi.client.Controllers
 
             var messages = new List<ChatMessage>
                 {
-                    new ChatMessage(ChatRole.User, "南宁的天气如何？")
+                    new ChatMessage(ChatRole.User, "What's the weather like in Nanning?")
                 };
             var chatOptions = new ChatOptions
             {
