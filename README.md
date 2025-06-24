@@ -1,35 +1,35 @@
-# mcpwebapi ½â¾ö·½°¸
+# mcp webapi demo
 
-±¾²Ö¿â°üº¬Á½¸ö .NET 8 ÏîÄ¿£º`mcpwebapi`£¨·şÎñ¶Ë WebAPI£©ºÍ `mcpwebapi.client`£¨¿Í»§¶Ë WebAPI£©¡£
+æœ¬ä»“åº“åŒ…å«ä¸¤ä¸ª .NET 8 é¡¹ç›®ï¼š`mcpwebapi`ï¼ˆæœåŠ¡ç«¯ WebAPIï¼‰å’Œ `mcpwebapi.client`ï¼ˆå®¢æˆ·ç«¯ WebAPIï¼‰ã€‚
 
-## ÏîÄ¿½á¹¹
+## é¡¹ç›®ç»“æ„
 
-- **mcpwebapi**£ºÌá¹©ÌìÆø²éÑ¯µÈ API¡£
-- **mcpwebapi.client**£ºÌá¹©ÁÄÌì½Ó¿Ú£¬ÑİÊ¾ AI ÁÄÌì¹¦ÄÜ¡£
+- **mcpwebapi**ï¼šæä¾›å¤©æ°”æŸ¥è¯¢ç­‰ APIã€‚
+- **mcpwebapi.client**ï¼šæä¾›èŠå¤©æ¥å£ï¼Œæ¼”ç¤º AI èŠå¤©åŠŸèƒ½ã€‚
 
-## Ö÷Òª¹¦ÄÜ
+## ä¸»è¦åŠŸèƒ½
 
 ### mcpwebapi
-- ÌìÆø²éÑ¯½Ó¿Ú£¨`WeatherForecastController`£©
+- å¤©æ°”æŸ¥è¯¢æ¥å£ï¼ˆ`WeatherForecastController`ï¼‰
 
 ### mcpwebapi.client
-- ÁÄÌì½Ó¿Ú£¨`ChatController`£©£¬¼¯³É AI ÁÄÌìÄÜÁ¦
+- èŠå¤©æ¥å£ï¼ˆ`ChatController`ï¼‰ï¼Œé›†æˆ AI èŠå¤©èƒ½åŠ›
 
-## ÔËĞĞ·½Ê½
+## è¿è¡Œæ–¹å¼
 
-1. °²×° [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-2. ÔÚÏîÄ¿¸ùÄ¿Â¼ÏÂÔËĞĞ£º
+1. å®‰è£… [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+2. åœ¨é¡¹ç›®æ ¹ç›®å½•ä¸‹è¿è¡Œï¼š
    ```bash
    dotnet build
    dotnet run --project mcpwebapi/mcpwebapi.csproj
    dotnet run --project mcpwebapi.client/mcpwebapi.client.csproj
    ```
-3. ·ÃÎÊÏàÓ¦µÄ API ¶Ëµã½øĞĞ²âÊÔ¡£
+3. è®¿é—®ç›¸åº”çš„ API ç«¯ç‚¹è¿›è¡Œæµ‹è¯•ã€‚
 
-## ÒÀÀµËµÃ÷
+## ä¾èµ–è¯´æ˜
 - Ivilson.McpDotNet.Webapi
 - Ivilson.McpDotNet.Client
 - Microsoft.AspNetCore
 
-## ±¸×¢
-ÈçĞè×Ô¶¨ÒåÅäÖÃ£¬Çë²Î¿¼¸÷ÏîÄ¿ÏÂµÄ `appsettings.json`¡£
+## å¤‡æ³¨
+å¦‚éœ€è‡ªå®šä¹‰é…ç½®ï¼Œè¯·å‚è€ƒå„é¡¹ç›®ä¸‹çš„ `appsettings.json`ã€‚
