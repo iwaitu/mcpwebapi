@@ -37,7 +37,7 @@ namespace mcpwebapi.client.Controllers
                     Id = "everything",
                     Name = "Everything",
                     TransportType = TransportTypes.Sse,
-                    Location = "https://mcp-ci.nngeo.net/sse",
+                    Location = "http://localhost:5214/sse",
                 };
                 McpClientOptions clientOptions = new()
                 {
