@@ -6,7 +6,7 @@ using Microsoft.Extensions.AI;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-var chatclient = new VllmQwen3ChatClient(
+var chatclient = new VllmQwen3NextChatClient(
                builder.Configuration["Vllm:ApiUrl"],
                builder.Configuration["Vllm:ApiKey"],
                builder.Configuration["Vllm:Model"]);
