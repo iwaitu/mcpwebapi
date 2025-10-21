@@ -1,10 +1,11 @@
 using McpDotNet.Client;
 using McpDotNet.Configuration;
-
 using McpDotNet.Protocol.Transport;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using Newtonsoft.Json;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 
 
 
@@ -111,6 +112,181 @@ namespace mcpwebapi.client.Controllers
                 }
 
                 return Ok(res.Text);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // 典型于 VLLM/OpenAI 兼容 API 返回 404/错误页面
+                _logger.LogError(ex, "ChatTest 调用失败，可能的 VLLM 端点配置错误或网络不可达。");
+                return Problem(title: "上游聊天服务异常", detail: ex.Message, statusCode: StatusCodes.Status502BadGateway);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ChatTest 未预期异常。");
+                return Problem(title: "服务器内部错误", detail: ex.Message, statusCode: StatusCodes.Status500InternalServerError);
+            }
+        }
+
+        [HttpPost("codeteststream")]
+        public async Task<IActionResult> ChatTest3(CancellationToken cancellationToken)
+        {
+            try
+            {
+                McpServerConfig serverConfig = new()
+                {
+                    Id = "everything",
+                    Name = "Everything",
+                    TransportType = TransportTypes.Sse,
+                    Location = "https://mcp-ci.nngeo.net/sse",
+                };
+                McpClientOptions clientOptions = new()
+                {
+                    ClientInfo = new() { Name = "SimpleToolsConsole", Version = "1.0.0" }
+                };
+                var mcpClient = await McpClientFactory.CreateAsync(serverConfig, clientOptions, cancellationToken: cancellationToken);
+                var tools = await mcpClient.GetAIFunctionsAsync(cancellationToken);
+                var _ = tools[0].JsonSchema.ToString();
+
+                var messages = new List<ChatMessage>
+                {
+                    new ChatMessage(ChatRole.System ,"你是一个智能助手，名字叫菲菲"),
+                    new ChatMessage(ChatRole.User,"执行这段代码：\nprint('result=',2**3)")
+                };
+
+                var chatOptions = new ChatOptions
+                {
+                    Temperature = 0.5f,
+                    Tools = tools.ToArray()
+                };
+
+                // 工具字典：toolName -> 调用实现(argsJson) —— 直接调用工具包装的 InvokeAsync，以对齐微软 HostedMcpServerTool 的做法
+                var toolInvokers = new Dictionary<string, Func<string, CancellationToken, Task<string>>>();
+                foreach (var t in tools)
+                {
+                    var toolName = t.Name;
+                    toolInvokers[toolName] = async (argsJson, ct) =>
+                    {
+                        try
+                        {
+                            // 直接走工具包装（远程 MCP 工具的代理）
+                            var dynTool = (dynamic)t;
+                            var result = await dynTool.InvokeAsync(argsJson, ct);
+                            return result?.ToString() ?? string.Empty;
+                        }
+                        catch (Exception e)
+                        {
+                            _logger.LogWarning(e, "手动调用工具失败: {tool}", toolName);
+                            return string.Empty;
+                        }
+                    };
+                }
+
+                // 收集调用过的工具，方便通知前端
+                var invokedTools = new List<object>();
+
+                while (true)
+                {
+                    var assistantDeltaContents = new List<AIContent>();
+                    List<FunctionCallContent>? toolCalls = null;
+
+                    await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, chatOptions, cancellationToken))
+                    {
+                        if (update.Contents?.Count > 0)
+                        {
+                            assistantDeltaContents.AddRange(update.Contents);
+
+                            // 如需前端实时显示，可在这里向前端推送增量文本
+                            foreach (var textPart in update.Contents.OfType<TextContent>())
+                            {
+                                _logger.LogInformation("stream: {text}", textPart.Text);
+                            }
+                        }
+
+                        if (update.FinishReason == ChatFinishReason.ToolCalls)
+                        {
+                            toolCalls = update.Contents.OfType<FunctionCallContent>().ToList();
+                            break;
+                        }
+                    }
+
+                    // 将包含函数调用的 Assistant 内容加入历史
+                    if (assistantDeltaContents.Count > 0)
+                    {
+                        var assistantMsg = new ChatMessage(ChatRole.Assistant, string.Empty);
+                        foreach (var c in assistantDeltaContents)
+                        {
+                            assistantMsg.Contents.Add(c);
+                        }
+                        messages.Add(assistantMsg);
+                    }
+
+                    // 如果没有工具调用，说明模型已给出最终答案
+                    if (toolCalls == null || toolCalls.Count == 0)
+                    {
+                        var finalText = string.Join(string.Empty, assistantDeltaContents.OfType<TextContent>().Select(t => t.Text));
+                        return Ok(new { tools = invokedTools, answer = finalText });
+                    }
+
+                    // 手动执行工具：从字典找到对应函数并执行，将结果以 Tool 角色返回给模型
+                    foreach (var fc in toolCalls)
+                    {
+                        var argsJson = fc.Arguments?.ToString() ?? string.Empty;
+
+                        invokedTools.Add(new { name = fc.Name, arguments = argsJson });
+                        _logger.LogInformation("准备调用工具: {name}, args: {args}", fc.Name, argsJson);
+
+                        string toolResult = string.Empty;
+                        if (toolInvokers.TryGetValue(fc.Name, out var invoker))
+                        {
+                            toolResult = await invoker(argsJson, cancellationToken);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("未找到工具: {name}", fc.Name);
+                            toolResult = $"未找到工具: {fc.Name}";
+                        }
+
+                        var toolMsg = new ChatMessage(ChatRole.Tool, string.Empty);
+                        toolMsg.Contents.Add(new FunctionResultContent(fc.Name, toolResult));
+                        messages.Add(toolMsg);
+                    }
+
+                    // 手动结果注入完毕后，再次请求模型，获取（可能的）最终回复
+                    var followup = await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
+                    messages.Add(followup.Messages[0]);
+
+                    while (followup.FinishReason == ChatFinishReason.ToolCalls)
+                    {
+                        var moreCalls = followup.Messages[0].Contents.OfType<FunctionCallContent>().ToList();
+                        foreach (var fc in moreCalls)
+                        {
+                            var argsJson = fc.Arguments?.ToString() ?? string.Empty;
+
+                            invokedTools.Add(new { name = fc.Name, arguments = argsJson });
+                            _logger.LogInformation("准备调用工具: {name}, args: {args}", fc.Name, argsJson);
+
+                            string toolResult = string.Empty;
+                            if (toolInvokers.TryGetValue(fc.Name, out var invoker))
+                            {
+                                toolResult = await invoker(argsJson, cancellationToken);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("未找到工具: {name}", fc.Name);
+                                toolResult = $"未找到工具: {fc.Name}";
+                            }
+
+                            var toolMsg = new ChatMessage(ChatRole.Tool, string.Empty);
+                            toolMsg.Contents.Add(new FunctionResultContent(fc.Name, toolResult));
+                            messages.Add(toolMsg);
+                        }
+
+                        followup = await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
+                        messages.Add(followup.Messages[0]);
+                    }
+
+                    var final = followup.Text ?? string.Empty;
+                    return Ok(new { tools = invokedTools, answer = final });
+                }
             }
             catch (InvalidOperationException ex)
             {
