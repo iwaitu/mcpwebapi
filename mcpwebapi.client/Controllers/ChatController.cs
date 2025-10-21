@@ -18,7 +18,7 @@ namespace mcpwebapi.client.Controllers
 
         private readonly ILogger<ChatController> _logger;
         private readonly IChatClient _chatClient;
-
+        private const string MCP_ENDPOINT = "http://localhost:5214/sse";
         public ChatController(ILogger<ChatController> logger,IChatClient client)
         {
             _logger = logger;
@@ -84,7 +84,7 @@ namespace mcpwebapi.client.Controllers
                     Id = "everything",
                     Name = "Everything",
                     TransportType = TransportTypes.Sse,
-                    Location = "http://localhost:3002/sse",
+                    Location = MCP_ENDPOINT,
                 };
                 McpClientOptions clientOptions = new()
                 {
@@ -136,7 +136,7 @@ namespace mcpwebapi.client.Controllers
                     Id = "everything",
                     Name = "Everything",
                     TransportType = TransportTypes.Sse,
-                    Location = "http://localhost:3002/sse",
+                    Location = MCP_ENDPOINT,
                 };
                 McpClientOptions clientOptions = new()
                 {
@@ -157,6 +157,7 @@ namespace mcpwebapi.client.Controllers
                     Temperature = 0.5f,
                     Tools = tools.ToArray()
                 };
+
 
                 // 工具字典：toolName -> 调用实现(args) —— 直接调用工具包装的 InvokeAsync，以对齐微软 HostedMcpServerTool 的做法
                 var toolInvokers = new Dictionary<string, Func<IDictionary<string, object?>, CancellationToken, Task<string>>>();
@@ -311,6 +312,140 @@ namespace mcpwebapi.client.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "ChatTest 未预期异常。");
+                return Problem(title: "服务器内部错误", detail: ex.Message, statusCode: StatusCodes.Status500InternalServerError);
+            }
+        }
+
+        [HttpPost("codeteststream_calltool")]
+        public async Task<IActionResult> ChatTest4(CancellationToken cancellationToken)
+        {
+            try
+            {
+                // 端点与可选 token
+                var endpoint = HttpContext.Request.Query["endpoint"].FirstOrDefault() ?? MCP_ENDPOINT;
+                var token = HttpContext.Request.Query["token"].FirstOrDefault();
+
+                var serverConfig = new McpServerConfig
+                {
+                    Id = "everything-calltool",
+                    Name = "Everything (CallTool)",
+                    TransportType = TransportTypes.Sse,
+                    Location = endpoint,
+                };
+
+                // 可选：通过反射设置 Authorization 头（若库支持）
+                try
+                {
+                    var headersProp = serverConfig.GetType().GetProperty("Headers");
+                    if (headersProp != null && !string.IsNullOrWhiteSpace(token))
+                    {
+                        var headers = headersProp.GetValue(serverConfig) as IDictionary<string, string> ?? new Dictionary<string, string>();
+                        headers["Authorization"] = $"Bearer {token}";
+                        headersProp.SetValue(serverConfig, headers);
+                    }
+                }
+                catch { }
+
+                var clientOptions = new McpClientOptions
+                {
+                    ClientInfo = new() { Name = "SimpleToolsConsole", Version = "1.0.0" }
+                };
+
+                var mcpClient = await McpClientFactory.CreateAsync(serverConfig, clientOptions, cancellationToken: cancellationToken);
+                var tools = await mcpClient.GetAIFunctionsAsync(cancellationToken);
+
+                var messages = new List<ChatMessage>
+                {
+                    new ChatMessage(ChatRole.System ,"你是一个智能助手，名字叫菲菲"),
+                    new ChatMessage(ChatRole.User, "执行这段代码：\\nprint('result=',2**3)")
+                };
+
+                var chatOptions = new ChatOptions
+                {
+                    Temperature = 0.3f,
+                    Tools = tools.ToArray()
+                };
+
+                var invokedTools = new List<object>();
+                var finalText = string.Empty;
+
+                while (true)
+                {
+                    var assistantDeltaContents = new List<AIContent>();
+                    List<FunctionCallContent>? toolCalls = null;
+
+                    await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, chatOptions, cancellationToken))
+                    {
+                        if (update.Contents?.Count > 0)
+                        {
+                            assistantDeltaContents.AddRange(update.Contents);
+                            foreach (var textPart in update.Contents.OfType<TextContent>())
+                            {
+                                finalText += textPart.Text;
+                                _logger.LogInformation("stream: {text}", textPart.Text);
+                            }
+                        }
+
+                        if (update.FinishReason == ChatFinishReason.ToolCalls)
+                        {
+                            toolCalls = update.Contents.OfType<FunctionCallContent>().ToList();
+                            break;
+                        }
+                    }
+
+                    if (assistantDeltaContents.Count > 0)
+                    {
+                        var assistantMsg = new ChatMessage(ChatRole.Assistant, string.Empty);
+                        foreach (var c in assistantDeltaContents)
+                        {
+                            assistantMsg.Contents.Add(c);
+                        }
+                        messages.Add(assistantMsg);
+                    }
+
+                    if (toolCalls == null || toolCalls.Count == 0)
+                    {
+                        return Ok(new { tools = invokedTools, answer = finalText });
+                    }
+
+                    // 通过 mcpClient.CallToolAsync 手动调用远程 MCP 工具
+                    foreach (var fc in toolCalls)
+                    {
+                        var argsDict = new Dictionary<string, object>();
+                        if (fc.Arguments != null)
+                        {
+                            foreach (var kv in fc.Arguments)
+                            {
+                                argsDict[kv.Key] = kv.Value!;
+                            }
+                        }
+
+                        var argsDisplay = string.Empty;
+                        try { argsDisplay = System.Text.Json.JsonSerializer.Serialize(argsDict); } catch { argsDisplay = argsDict.ToString() ?? string.Empty; }
+
+                        _logger.LogInformation("CallToolAsync -> {name} with args: {args}", fc.Name, argsDisplay);
+                        invokedTools.Add(new { name = fc.Name, arguments = argsDisplay });
+
+                        var callRes = await mcpClient.CallToolAsync(fc.Name, argsDict, cancellationToken);
+                        var toolResult = string.Empty;
+                        try { toolResult = System.Text.Json.JsonSerializer.Serialize(callRes); } catch { toolResult = callRes?.ToString() ?? string.Empty; }
+
+                        var toolMsg = new ChatMessage(ChatRole.Tool, string.Empty);
+                        toolMsg.Contents.Add(new FunctionResultContent(fc.Name, toolResult));
+                        messages.Add(toolMsg);
+                    }
+
+                    // 循环继续，下一轮仍然使用流式获取，直到没有 ToolCalls
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogError(ex, "ChatTest4 调用失败，可能的 MCP 端点配置错误或网络不可达。");
+                return Problem(title: "上游聊天服务异常", detail: ex.Message, statusCode: StatusCodes.Status502BadGateway);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ChatTest4 未预期异常。");
                 return Problem(title: "服务器内部错误", detail: ex.Message, statusCode: StatusCodes.Status500InternalServerError);
             }
         }
