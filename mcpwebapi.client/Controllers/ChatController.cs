@@ -136,7 +136,7 @@ namespace mcpwebapi.client.Controllers
                     Id = "everything",
                     Name = "Everything",
                     TransportType = TransportTypes.Sse,
-                    Location = "https://mcp-ci.nngeo.net/sse",
+                    Location = "http://localhost:3002/sse",
                 };
                 McpClientOptions clientOptions = new()
                 {
@@ -158,19 +158,19 @@ namespace mcpwebapi.client.Controllers
                     Tools = tools.ToArray()
                 };
 
-                // 工具字典：toolName -> 调用实现(argsJson) —— 直接调用工具包装的 InvokeAsync，以对齐微软 HostedMcpServerTool 的做法
-                var toolInvokers = new Dictionary<string, Func<string, CancellationToken, Task<string>>>();
+                // 工具字典：toolName -> 调用实现(args) —— 直接调用工具包装的 InvokeAsync，以对齐微软 HostedMcpServerTool 的做法
+                var toolInvokers = new Dictionary<string, Func<IDictionary<string, object?>, CancellationToken, Task<string>>>();
                 foreach (var t in tools)
                 {
                     var toolName = t.Name;
-                    toolInvokers[toolName] = async (argsJson, ct) =>
+                    toolInvokers[toolName] = async (argsDict, ct) =>
                     {
                         try
                         {
-                            // 直接走工具包装（远程 MCP 工具的代理）
-                            var dynTool = (dynamic)t;
-                            var result = await dynTool.InvokeAsync(argsJson, ct);
-                            return result?.ToString() ?? string.Empty;
+                            var aiArgs = new AIFunctionArguments(argsDict);
+                            var result = await t.InvokeAsync(aiArgs, ct);
+                            if (result is string s) return s;
+                            try { return System.Text.Json.JsonSerializer.Serialize(result); } catch { return result?.ToString() ?? string.Empty; }
                         }
                         catch (Exception e)
                         {
@@ -229,15 +229,22 @@ namespace mcpwebapi.client.Controllers
                     // 手动执行工具：从字典找到对应函数并执行，将结果以 Tool 角色返回给模型
                     foreach (var fc in toolCalls)
                     {
-                        var argsJson = fc.Arguments?.ToString() ?? string.Empty;
+                        if (fc.Arguments is null)
+                        {
+                            _logger.LogWarning("函数调用缺少参数: {name}", fc.Name);
+                            continue;
+                        }
 
-                        invokedTools.Add(new { name = fc.Name, arguments = argsJson });
-                        _logger.LogInformation("准备调用工具: {name}, args: {args}", fc.Name, argsJson);
+                        var argsDisplay = string.Empty;
+                        try { argsDisplay = System.Text.Json.JsonSerializer.Serialize(fc.Arguments); } catch { argsDisplay = fc.Arguments.ToString() ?? string.Empty; }
+
+                        invokedTools.Add(new { name = fc.Name, arguments = argsDisplay });
+                        _logger.LogInformation("准备调用工具: {name}, args: {args}", fc.Name, argsDisplay);
 
                         string toolResult = string.Empty;
                         if (toolInvokers.TryGetValue(fc.Name, out var invoker))
                         {
-                            toolResult = await invoker(argsJson, cancellationToken);
+                            toolResult = await invoker(fc.Arguments, cancellationToken);
                         }
                         else
                         {
@@ -259,15 +266,22 @@ namespace mcpwebapi.client.Controllers
                         var moreCalls = followup.Messages[0].Contents.OfType<FunctionCallContent>().ToList();
                         foreach (var fc in moreCalls)
                         {
-                            var argsJson = fc.Arguments?.ToString() ?? string.Empty;
+                            if (fc.Arguments is null)
+                            {
+                                _logger.LogWarning("函数调用缺少参数: {name}", fc.Name);
+                                continue;
+                            }
 
-                            invokedTools.Add(new { name = fc.Name, arguments = argsJson });
-                            _logger.LogInformation("准备调用工具: {name}, args: {args}", fc.Name, argsJson);
+                            var argsDisplay = string.Empty;
+                            try { argsDisplay = System.Text.Json.JsonSerializer.Serialize(fc.Arguments); } catch { argsDisplay = fc.Arguments.ToString() ?? string.Empty; }
+
+                            invokedTools.Add(new { name = fc.Name, arguments = argsDisplay });
+                            _logger.LogInformation("准备调用工具: {name}, args: {args}", fc.Name, argsDisplay);
 
                             string toolResult = string.Empty;
                             if (toolInvokers.TryGetValue(fc.Name, out var invoker))
                             {
-                                toolResult = await invoker(argsJson, cancellationToken);
+                                toolResult = await invoker(fc.Arguments, cancellationToken);
                             }
                             else
                             {
